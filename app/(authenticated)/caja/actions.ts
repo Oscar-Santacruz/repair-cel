@@ -49,7 +49,7 @@ export async function getCajaData(dateFrom: string, dateTo: string) {
     const movements: CajaMovement[] = []
 
     for (const sale of (sales || [])) {
-        const client = sale.clients as { full_name: string } | null
+        const client = Array.isArray(sale.clients) ? sale.clients[0] : sale.clients as { full_name: string } | null
         movements.push({
             id: sale.id,
             type: 'VENTA',
@@ -62,7 +62,7 @@ export async function getCajaData(dateFrom: string, dateTo: string) {
     }
 
     for (const purchase of (purchases || [])) {
-        const supplier = purchase.suppliers as { name: string } | null
+        const supplier = Array.isArray(purchase.suppliers) ? purchase.suppliers[0] : purchase.suppliers as { name: string } | null
         movements.push({
             id: purchase.id,
             type: 'COMPRA',
