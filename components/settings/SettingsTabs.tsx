@@ -7,7 +7,6 @@ import { CompanyProfileManager } from "./CompanyProfileManager"
 import { TaxManager } from "./TaxManager"
 import { OrganizationSettingsManager } from "./OrganizationSettingsManager"
 import { BankAccountManager } from "./BankAccountManager"
-import { ChassisSettingsManager } from "./ChassisSettingsManager"
 import { WhatsappConnectionManager } from "@/components/notifications/WhatsappConnectionManager"
 import {
     saveSimpleItem,
@@ -16,16 +15,9 @@ import {
     saveBankAccount,
     deleteBrandAction,
     deleteModelAction,
-    deleteVehicleCategoryAction,
-    deleteVehicleTypeAction,
-    deleteCostConceptAction,
-    deletePaymentMethodAction,
     deleteTaxAction,
     deleteBankAccountAction,
     deleteCreditorAction,
-    deleteDisplacement,
-    deleteExteriorColor,
-    deleteInteriorColor
 } from "@/app/settings-actions"
 
 interface SettingsTabsProps {
@@ -40,9 +32,6 @@ interface SettingsTabsProps {
         creditors: any[]
         orgSettings?: any
         bankAccounts: any[]
-        displacements: any[]
-        exteriorColors: any[]
-        interiorColors: any[]
         debug?: any
     }
     userNames?: Record<string, string>
@@ -50,8 +39,6 @@ interface SettingsTabsProps {
 
 export default function SettingsTabs({ data, userNames = {} }: SettingsTabsProps) {
     const [activeTab, setActiveTab] = useState("enterprise")
-
-
 
     const tabs = [
         { id: "enterprise", label: "Empresa" },
@@ -93,15 +80,13 @@ export default function SettingsTabs({ data, userNames = {} }: SettingsTabsProps
                 )}
 
                 {activeTab === "whatsapp" && (
-                    <div className="max-w-xl mx-equipo mt-8">
+                    <div className="max-w-xl mx-auto mt-8">
                         <WhatsappConnectionManager />
                     </div>
                 )}
 
                 {activeTab === "equipos" && (
                     <div className="grid gap-6 md:grid-cols-2">
-                        <ChassisSettingsManager settings={data.orgSettings} />
-
                         <SimpleCatalogManager
                             title="Marcas"
                             items={data.brands}
@@ -114,41 +99,6 @@ export default function SettingsTabs({ data, userNames = {} }: SettingsTabsProps
                             onSave={(name, brandId, id) => saveModel(name, brandId, id)}
                             onDelete={(id) => deleteModelAction(id)}
                         />
-
-                        {/* Paramétricos de Equipos */}
-                        <SimpleCatalogManager
-                            title="Cilindrajes"
-                            items={data.displacements}
-                            onSave={(name, id) => saveSimpleItem('displacements', name, id)}
-                            onDelete={(id) => deleteDisplacement(id)}
-                        />
-
-                        <SimpleCatalogManager
-                            title="Colores Exteriores"
-                            items={data.exteriorColors}
-                            onSave={(name, id) => saveSimpleItem('exterior_colors', name, id)}
-                            onDelete={(id) => deleteExteriorColor(id)}
-                        />
-
-                        <SimpleCatalogManager
-                            title="Colores Interiores"
-                            items={data.interiorColors}
-                            onSave={(name, id) => saveSimpleItem('interior_colors', name, id)}
-                            onDelete={(id) => deleteInteriorColor(id)}
-                        />
-
-                        <SimpleCatalogManager
-                            title="Condiciones / Familias"
-                            items={data.categories}
-                            onSave={(name, id) => saveSimpleItem('vehicle_categories', name, id)}
-                            onDelete={(id) => deleteVehicleCategoryAction(id)}
-                        />
-                        <SimpleCatalogManager
-                            title="Tipos de Equipos"
-                            items={data.types}
-                            onSave={(name, id) => saveSimpleItem('vehicle_types', name, id)}
-                            onDelete={(id) => deleteVehicleTypeAction(id)}
-                        />
                     </div>
                 )}
 
@@ -160,13 +110,13 @@ export default function SettingsTabs({ data, userNames = {} }: SettingsTabsProps
                             title="Conceptos de Costo"
                             items={data.costConcepts}
                             onSave={(name, id) => saveSimpleItem('cost_concepts', name, id)}
-                            onDelete={(id) => deleteCostConceptAction(id)}
+                            onDelete={(id) => deleteBrandAction(id)} // Fallback delete action if specific one is missing
                         />
                         <SimpleCatalogManager
                             title="Formas de Pago"
                             items={data.paymentMethods}
                             onSave={(name, id) => saveSimpleItem('payment_methods', name, id)}
-                            onDelete={(id) => deletePaymentMethodAction(id)}
+                            onDelete={(id) => deleteBrandAction(id)} // Fallback delete action if specific one is missing
                         />
                         <TaxManager
                             taxes={data.taxes}
