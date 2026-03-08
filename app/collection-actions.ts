@@ -1,0 +1,587 @@
+'use server'
+
+import { createServerClient } from "@supabase/ssr"
+import { createClient } from "@supabase/supabase-js"
+import { cookies } from "next/headers"
+import { revalidatePath } from "next/cache"
+
+// Export deletion action
+import { deletePaymentAction as deletePaymentActionFn } from './deletion-actions'
+export async function deletePaymentAction(id: string, reason?: string) { return deletePaymentActionFn(id, reason) }
+
+export async function getClientPendingInstallments(clientId: string) {
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+            cookies: {
+                get(name: string) {
+                    return cookieStore.get(name)?.value
+                },
+            },
+        }
+    )
+
+    const { data, error } = await supabase
+        .from('installments')
+        .select(`
+            *,
+            sales (
+                id,
+                vehicle_id,
+                equipos (
+                    brand,
+                    model,
+                    year,
+                    plate
+                )
+            )
+        `)
+        .eq('sales.client_id', clientId)
+        .in('status', ['pending', 'partial'])
+        .order('due_date', { ascending: true })
+
+    if (error) {
+        console.error('Error fetching installments:', error)
+        throw new Error('Error al obtener cuotas pendientes')
+    }
+
+    // Filter out installments where the join returned null (if any)
+    const validInstallments = data?.filter(item => item.sales !== null) || []
+    return validInstallments
+}
+
+type PaymentData = {
+    installmentId: string | null;
+    saleId: string;
+    amount: number;
+    paymentMethod: string;
+    referenceNumber?: string;
+    penaltyAmount?: number;
+    comment?: string;
+    bankAccountId?: string;
+}
+
+export async function processPayment(data: PaymentData) {
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+            cookies: {
+                get(name: string) {
+                    return cookieStore.get(name)?.value
+                },
+            },
+        }
+    )
+
+    // 0. Get current user for tracking
+    const { data: { user } } = await supabase.auth.getUser()
+
+    // 1. Insert Payment
+    const { data: insertedPayment, error: paymentError } = await supabase.from('payments').insert({
+        sale_id: data.saleId,
+        installment_id: data.installmentId,
+        amount: data.amount,
+        payment_method: data.paymentMethod,
+        reference_number: data.referenceNumber,
+        penalty_amount: data.penaltyAmount || 0,
+        comment: data.comment,
+        bank_account_id: data.bankAccountId,
+        created_by: user?.id
+    }).select().single()
+
+    if (paymentError) {
+        throw new Error(`Error registering payment: ${paymentError.message}`)
+    }
+
+    // 2. Update Installment Status if applicable
+    let installmentNumber = "N/A"
+    if (data.installmentId) {
+        const { data: inst } = await supabase.from('installments').select('number, amount').eq('id', data.installmentId).single()
+        installmentNumber = inst?.number || "N/A"
+
+        // Fetch all payments for this installment to check if it's fully paid
+        const { data: allPayments } = await supabase
+            .from('payments')
+            .select('amount, penalty_amount')
+            .eq('installment_id', data.installmentId)
+
+        const totalPaidToCapital = (allPayments || []).reduce((sum, p) => {
+            const capitalPaid = p.amount - (p.penalty_amount || 0)
+            return sum + (capitalPaid > 0 ? capitalPaid : 0)
+        }, 0)
+
+        const isFullyPaid = inst ? totalPaidToCapital >= inst.amount : true
+
+        await supabase.from('installments').update({
+            status: isFullyPaid ? 'paid' : 'partial',
+            payment_date: isFullyPaid ? new Date().toISOString() : null
+        }).eq('id', data.installmentId)
+    }
+
+    // 3. Update Sale Balance
+    const amountToReduceParams = data.amount - (data.penaltyAmount || 0)
+    const amountToReduce = amountToReduceParams > 0 ? amountToReduceParams : 0
+
+    const { data: sale } = await supabase.from('sales').select('balance').eq('id', data.saleId).single()
+    if (sale) {
+        const newBalance = sale.balance - amountToReduce
+        await supabase.from('sales').update({ balance: newBalance }).eq('id', data.saleId)
+    }
+
+    // 4. Log Cash Movement
+    const { error: cashError } = await supabase
+        .from('cash_movements')
+        .insert({
+            type: 'income',
+            amount: data.amount,
+            description: `Cobro Cuota N° ${installmentNumber} - Venta ${data.saleId} ${data.penaltyAmount ? `(Incl. Multa: ${data.penaltyAmount})` : ''}`,
+            related_entity_id: data.saleId
+        })
+
+    if (cashError) {
+        console.warn('Error creating cash movement log:', cashError)
+    }
+
+    // 5. Send WhatsApp notification (fire and forget – we don't block on this)
+    try {
+        const whatsappBotUrl = process.env.WHATSAPP_BOT_URL
+        const whatsappBotToken = process.env.WHATSAPP_BOT_TOKEN
+
+        // Initialize admin client early for dual use
+        const supabaseAdmin = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!
+        )
+
+        // Fetch organization_id from the authenticated user's profile as a fallback
+        const { data: profile } = await supabase.from('profiles').select('organization_id').single()
+
+        // Fetch client phone and organization_id via sale join using ADMIN client to bypass any field-level RLS
+        const { data: saleWithClient, error: saleError } = await supabaseAdmin
+            .from('sales')
+            .select(`
+                id,
+                organization_id,
+                clients:clients!sales_client_id_fkey (
+                    id, name, phone
+                )
+            `)
+            .eq('id', data.saleId)
+            .single()
+
+        if (!saleError && saleWithClient) {
+            const client = Array.isArray(saleWithClient.clients)
+                ? (saleWithClient.clients as any[])[0]
+                : saleWithClient.clients as any
+
+            const finalOrgId = saleWithClient.organization_id || profile?.organization_id || process.env.NEXT_PUBLIC_DEFAULT_ORG_ID
+            /*
+                        if (client?.phone) {
+                            const message =
+                                `✅ *Confirmación de Pago*\n\n` +
+                                `Hola ${client.name}, confirmamos la recepción de su pago de *${installmentNumber ? 'Cuota N° ' + installmentNumber : 'Entrega Inicial'}* ` +
+                                `por *${Number(data.amount).toLocaleString('es-PY')} Gs.*\n\n` +
+                                `_Gracias por su puntualidad._`
+            
+                            let notifStatus: 'sent' | 'failed' = 'failed'
+                            let errorMsg: string | null = 'Bot not configured'
+            
+                            if (whatsappBotUrl && whatsappBotToken) {
+                                const controller = new AbortController()
+                                const id = setTimeout(() => controller.abort(), 5000) // 5 seconds timeout
+            
+                                try {
+                                    const response = await fetch(`${whatsappBotUrl}/send`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${whatsappBotToken}`,
+                                        },
+                                        body: JSON.stringify({ phone: client.phone, message }),
+                                        signal: controller.signal
+                                    })
+            
+                                    clearTimeout(id)
+                                    notifStatus = response.ok ? 'sent' : 'failed'
+                                    errorMsg = response.ok ? null : await response.text()
+            
+                                    if (!response.ok) {
+                                        console.warn(`[WA] Bot error for ${client.phone}: ${errorMsg}`)
+                                    }
+                                } catch (fetchError: any) {
+                                    clearTimeout(id)
+                                    if (fetchError.name === 'AbortError') {
+                                        errorMsg = 'Timeout: El bot de WhatsApp no respondió a tiempo'
+                                    } else {
+                                        errorMsg = fetchError.name === 'FetchError' ? 'Error de conexión con el bot' : fetchError.message
+                                    }
+                                    console.warn(`[WA] Fetch error for ${client.phone}: ${errorMsg}`)
+                                    notifStatus = 'failed'
+                                }
+                            }
+            
+                            // Log into whatsapp_notifications using admin client (RLS bypass)
+                            const { error: insertError } = await supabaseAdmin.from('whatsapp_notifications').insert({
+                                organization_id: finalOrgId,
+                                client_id: client.id,
+                                sale_id: data.sale_id,
+                                installment_id: data.installment_id || null,
+                                type: 'payment_confirmation',
+                                phone: client.phone,
+                                message: message,
+                                status: notifStatus,
+                                error_message: errorMsg
+                            })
+            
+                            if (insertError) console.error("Error logging whatsapp notification:", insertError)
+                        }
+            */
+            // Notification is now handled manually from the frontend PaymentForm
+            console.log(`[WA] Automatic notification disabled. Payment recorded for sale ${data.saleId}`)
+        } else if (saleError) {
+            console.error('[WA] Sale/Client fetch error:', saleError.message)
+        }
+    } catch (waError) {
+        // We do NOT throw – WhatsApp failure should not block the payment confirmation
+        console.error('[WA] Unexpected error in notification block:', waError)
+    }
+
+    revalidatePath(`/collections/${data.saleId}`)
+    revalidatePath(`/sales/${data.saleId}`)
+    revalidatePath('/collections')
+    revalidatePath('/notifications')
+
+    return { success: true, payment: insertedPayment }
+}
+
+// ... imports
+
+export type ClientSummary = {
+    id: string
+    name: string
+    ci: string
+    pendingCount: number
+    nearestDueDate: string | null
+    totalOverdue: number
+    maxDaysOverdue: number
+    status: 'clean' | 'overdue' | 'warning'
+}
+
+export async function getClientsWithPendingSummary(): Promise<ClientSummary[]> {
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+            cookies: {
+                get(name: string) {
+                    return cookieStore.get(name)?.value
+                },
+            },
+        }
+    )
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return []
+
+    const { data: profile } = await supabase.from('profiles').select('organization_id').eq('id', user.id).single()
+    const organization_id = profile?.organization_id
+    if (!organization_id) return []
+
+    // Fetch clients with their pending installments
+    // We want ALL clients, but we also want to know about their debt.
+    // If a client has no debt, they might still appear but with status 'clean'.
+    const { data: clients, error } = await supabase
+        .from('clients')
+        .select(`
+            id,
+            name,
+            ci,
+            sales:sales!sales_client_id_fkey (
+                id,
+                installments (
+                    id,
+                    amount,
+                    due_date,
+                    status
+                )
+            )
+        `)
+        .eq('organization_id', organization_id)
+        .order('name')
+
+    if (error) {
+        console.error('Error fetching clients summary:', JSON.stringify(error, null, 2))
+        throw new Error(`Error al obtener el resumen de clientes: ${error.message || JSON.stringify(error)}`)
+    }
+
+    // Process data to flat summary
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const summary = clients.map(client => {
+        let pendingCount = 0
+        let totalOverdue = 0
+        let maxDaysOverdue = 0
+        let nearestDueDate: Date | null = null
+        let hasOverdue = false
+
+        client.sales?.forEach((sale: any) => {
+            sale.installments?.forEach((inst: any) => {
+                if (inst.status === 'pending' || inst.status === 'partial') {
+                    pendingCount++
+                    const due = new Date(inst.due_date)
+
+                    if (!nearestDueDate || due < nearestDueDate) {
+                        nearestDueDate = due
+                    }
+
+                    if (due < today) {
+                        hasOverdue = true
+                        totalOverdue += inst.amount
+                        const diffDays = Math.ceil((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24))
+                        if (diffDays > maxDaysOverdue) maxDaysOverdue = diffDays
+                    }
+                }
+            })
+        })
+
+        // Determine Status
+        let status: 'clean' | 'overdue' | 'warning' = 'clean'
+        if (hasOverdue) {
+            status = 'overdue'
+        } else if (pendingCount > 0) {
+            // Check if due soon (e.g. within 7 days)
+            if (nearestDueDate) {
+                const nd = nearestDueDate as Date
+                const diffTime = nd.getTime() - today.getTime()
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                if (diffDays <= 7) {
+                    status = 'warning'
+                }
+            }
+        }
+
+        return {
+            id: client.id,
+            name: client.name,
+            ci: client.ci,
+            pendingCount,
+            nearestDueDate: nearestDueDate ? (nearestDueDate as Date).toISOString() : null,
+            totalOverdue,
+            maxDaysOverdue,
+            status
+        }
+    }).filter(client => client.pendingCount > 0)
+
+    return summary
+}
+export async function getSalesWithPendingSummary(): Promise<any[]> {
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+            cookies: {
+                get(name: string) {
+                    return cookieStore.get(name)?.value
+                },
+            },
+        }
+    )
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return []
+
+    const { data: profile } = await supabase.from('profiles').select('organization_id').eq('id', user.id).single()
+    const organization_id = profile?.organization_id
+    if (!organization_id) return []
+
+    // Fetch sales with pending installments directly
+    const { data: sales, error } = await supabase
+        .from('sales')
+        .select(`
+            id,
+            total_amount,
+            balance,
+            sale_date,
+            clients:clients!sales_client_id_fkey (
+                name,
+                ci
+            ),
+            equipos (
+                brand,
+                model,
+                plate
+            ),
+            installments (
+                id,
+                amount,
+                due_date,
+                status
+            )
+        `)
+        .eq('organization_id', organization_id)
+        .order('sale_date', { ascending: false })
+
+    if (error) {
+        console.error('Error fetching sales summary:', error)
+        throw new Error('Error al obtener ventas pendientes')
+    }
+
+    // Process to find pending details
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const summary = sales.map(sale => {
+        let pendingCount = 0
+        let nearestDueDate: Date | null = null
+        let hasOverdue = false
+        let maxDaysOverdue = 0
+        // Cast installments to any to access filtered props if not generic
+        const insts = sale.installments as any[]
+        const pendingInsts = insts.filter(i => i.status === 'pending' || i.status === 'partial')
+
+        pendingInsts.forEach(inst => {
+            pendingCount++
+            const due = new Date(inst.due_date)
+            if (!nearestDueDate || due < nearestDueDate) {
+                nearestDueDate = due
+            }
+            if (due < today) {
+                hasOverdue = true
+                const diffDays = Math.ceil((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24))
+                if (diffDays > maxDaysOverdue) maxDaysOverdue = diffDays
+            }
+        })
+
+        if (pendingCount === 0) return null // Filter out paid sales
+
+        let status: 'clean' | 'overdue' | 'warning' = 'clean'
+        if (hasOverdue) {
+            status = 'overdue'
+        } else if (nearestDueDate) {
+            const nd = nearestDueDate as Date
+            const diffTime = nd.getTime() - today.getTime()
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+            if (diffDays <= 7) {
+                status = 'warning'
+            }
+        }
+
+        // Helper to safely get single relation data
+        const client = Array.isArray(sale.clients) ? sale.clients[0] : sale.clients as any
+        const equipo = Array.isArray(sale.equipos) ? sale.equipos[0] : sale.equipos as any
+
+        return {
+            id: sale.id, // Sale ID
+            name: client ? `${client.name} - ${equipo?.brand || ''} ${equipo?.model || ''}` : 'Cliente Desconocido',
+            ci: client?.ci, // Keep for search
+            pendingCount,
+            nearestDueDate: nearestDueDate ? (nearestDueDate as Date).toISOString() : null,
+            totalOverdue: 0,
+            maxDaysOverdue,
+            status,
+            type: 'sale',
+            balance: sale.balance
+        }
+    }).filter(s => s !== null)
+
+    return summary as any[]
+}
+
+export async function sendPaymentConfirmationAction(paymentId: string) {
+    const supabaseAdmin = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+
+    // 1. Fetch Payment with Sale and Client info
+    const { data: payment, error: paymentError } = await supabaseAdmin
+        .from('payments')
+        .select(`
+            *,
+            sales (
+                id,
+                organization_id,
+                clients:clients!sales_client_id_fkey (
+                    id, name, phone
+                )
+            ),
+            installments (
+                number
+            )
+        `)
+        .eq('id', paymentId)
+        .single()
+
+    if (paymentError || !payment) {
+        throw new Error("Pago no encontrado")
+    }
+
+    const sale = payment.sales
+    const client = Array.isArray(sale.clients) ? sale.clients[0] : sale.clients
+    const installmentNumber = payment.installments?.number || "N/A"
+
+    if (!client?.phone) {
+        throw new Error("El cliente no tiene un teléfono registrado")
+    }
+
+    // 2. Get org settings for bot URL/token
+    const { data: orgSettings } = await supabaseAdmin
+        .from('organization_settings')
+        .select('whatsapp_bot_url, whatsapp_bot_token')
+        .eq('organization_id', sale.organization_id)
+        .single()
+
+    const whatsappBotUrl = orgSettings?.whatsapp_bot_url || process.env.WHATSAPP_BOT_URL
+    const whatsappBotToken = orgSettings?.whatsapp_bot_token || process.env.WHATSAPP_BOT_TOKEN
+
+    if (!whatsappBotUrl || !whatsappBotToken) {
+        throw new Error("El sistema de WhatsApp no está configurado")
+    }
+
+    // 2. Construct Message
+    const message =
+        `✅ *Confirmación de Pago*\n\n` +
+        `Hola ${client.name}, confirmamos la recepción de su pago de *${installmentNumber === 'N/A' ? 'Entrega Inicial' : `Cuota N° ${installmentNumber}`}* ` +
+        `por *${Number(payment.amount).toLocaleString('es-PY')} Gs.*\n\n` +
+        `_Gracias por su puntualidad._`
+
+    // 3. Send via Bot
+    const response = await fetch(`${whatsappBotUrl}/send`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${whatsappBotToken}`,
+        },
+        body: JSON.stringify({ phone: client.phone, message, orgId: sale.organization_id }),
+    })
+
+    const status = response.ok ? 'sent' : 'failed'
+    const errorMsg = response.ok ? null : await response.text()
+
+    // 4. Log to DB
+    const { error: insertError } = await supabaseAdmin.from('whatsapp_notifications').insert({
+        organization_id: sale.organization_id,
+        client_id: client.id,
+        sale_id: sale.id,
+        installment_id: payment.installment_id,
+        type: 'payment_confirmation',
+        phone: client.phone,
+        message,
+        status: status,
+        error_message: errorMsg,
+    })
+
+    if (insertError) console.error("Error logging notification:", insertError)
+
+    revalidatePath(`/sales/${sale.id}`)
+    revalidatePath('/notifications')
+
+    return { success: response.ok, error: errorMsg }
+}

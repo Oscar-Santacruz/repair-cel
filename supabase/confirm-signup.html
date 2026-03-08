@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Confirma tu correo electrónico</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f5;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrapper {
+            width: 100%;
+            background-color: #f4f4f5;
+            padding: 40px 0;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            overflow: hidden;
+        }
+
+        .header {
+            background-color: #18181b;
+            /* color secundario oscuro */
+            padding: 32px 24px;
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #ffffff;
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .content {
+            padding: 40px 32px;
+            color: #3f3f46;
+            line-height: 1.6;
+        }
+
+        .content p {
+            margin: 0 0 20px;
+            font-size: 16px;
+        }
+
+        .content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .action {
+            text-align: center;
+            margin: 32px 0;
+        }
+
+        .btn {
+            display: inline-block;
+            background-color: #18181b;
+            /* dark background button */
+            color: #ffffff !important;
+            text-decoration: none;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover {
+            background-color: #27272a;
+        }
+
+        .divider {
+            height: 1px;
+            background-color: #e4e4e7;
+            margin: 32px 0;
+        }
+
+        .fallback {
+            background-color: #fafafa;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 24px;
+        }
+
+        .fallback p {
+            font-size: 14px;
+            color: #71717a;
+            margin-bottom: 8px;
+        }
+
+        .fallback-link {
+            font-size: 14px;
+            color: #3b82f6;
+            word-break: break-all;
+        }
+
+        .footer {
+            background-color: #fafafa;
+            border-top: 1px solid #e4e4e7;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .footer p {
+            color: #a1a1aa;
+            font-size: 14px;
+            margin: 0;
+        }
+
+        /* Dark mode support para clientes de correo que lo soporten */
+        @media (prefers-color-scheme: dark) {
+
+            body,
+            .wrapper {
+                background-color: #09090b !important;
+            }
+
+            .container {
+                background-color: #18181b !important;
+                border: 1px solid #27272a;
+            }
+
+            .header {
+                background-color: #09090b !important;
+                border-bottom: 1px solid #27272a;
+            }
+
+            .header h1 {
+                color: #f4f4f5 !important;
+            }
+
+            .content {
+                color: #d4d4d8 !important;
+            }
+
+            .btn {
+                background-color: #f4f4f5 !important;
+                color: #18181b !important;
+            }
+
+            .btn:hover {
+                background-color: #e4e4e7 !important;
+            }
+
+            .divider {
+                background-color: #27272a !important;
+            }
+
+            .fallback {
+                background-color: #27272a !important;
+            }
+
+            .fallback p {
+                color: #a1a1aa !important;
+            }
+
+            .footer {
+                background-color: #09090b !important;
+                border-top: 1px solid #27272a !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrapper">
+        <div class="container">
+            <div class="header">
+                <!-- Logotipo de la empresa (se carga usando la URL de la web configurada en Supabase) -->
+                <img src="{{ .SiteURL }}/LOGO_default.png" alt="Logo de la empresa"
+                    style="height: 48px; width: auto; margin-bottom: 20px;" />
+                <h1>Confirma tu registro</h1>
+            </div>
+            <div class="content">
+                <p>Hola,</p>
+                <p>Gracias por registrarte. Para finalizar la creación de tu cuenta y empezar a utilizar nuestra
+                    plataforma, por favor confirma tu dirección de correo electrónico haciendo clic en el siguiente
+                    botón:</p>
+
+                <div class="action">
+                    <!-- Variable de Supabase para el Click de confirmación -->
+                    <a href="{{ .ConfirmationURL }}" class="btn">Confirmar correo electrónico</a>
+                </div>
+
+                <div class="fallback">
+                    <p>Si el botón no funciona, copia y pega este enlace en tu navegador:</p>
+                    <a href="{{ .ConfirmationURL }}" class="fallback-link">{{ .ConfirmationURL }}</a>
+                </div>
+
+                <div class="divider"></div>
+
+                <p style="font-size: 14px; color: #71717a;">Si no solicitaste crear esta cuenta, puedes ignorar o
+                    eliminar este mensaje con seguridad.</p>
+            </div>
+            <div class="footer">
+                <p>Este es un mensaje automático, por favor no respondas a este correo.</p>
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>
