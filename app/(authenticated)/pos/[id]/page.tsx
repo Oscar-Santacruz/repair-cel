@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ArrowLeft, User, CreditCard, FileText, Package } from "lucide-react"
-import { getSaleById } from "@/app/(authenticated)/pos/actions"
+import { getSaleById, type SaleCartItem } from "@/app/(authenticated)/pos/actions"
 
 interface PageProps { params: Promise<{ id: string }> }
 
@@ -18,9 +18,7 @@ export default async function SaleDetailPage({ params }: PageProps) {
     const sale = await getSaleById(id)
     if (!sale) notFound()
 
-    const items = (sale.sale_items || []) as Array<{
-        id: string; description: string; quantity: number; unit_price: number; total: number
-    }>
+    const items = (sale.sale_items || []) as SaleCartItem[]
 
     const client = sale.clients as { full_name: string; phone: string | null } | null
 
@@ -68,7 +66,7 @@ export default async function SaleDetailPage({ params }: PageProps) {
                 <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Package className="h-4 w-4 text-primary" /> Ítems</CardTitle></CardHeader>
                 <CardContent>
                     {items.map(item => (
-                        <div key={item.id} className="flex items-center gap-3 py-2 border-b last:border-0">
+                        <div key={item.id || item.stock_id} className="flex items-center gap-3 py-2 border-b last:border-0">
                             <div className="flex-1">
                                 <p className="text-sm font-medium">{item.description}</p>
                                 <p className="text-xs text-muted-foreground">{item.quantity} u. × {formatGs(item.unit_price)}</p>

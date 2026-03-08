@@ -16,6 +16,7 @@ async function getSupabase() {
 }
 
 export interface SaleCartItem {
+    id?: string
     stock_id: string
     description: string
     quantity: number

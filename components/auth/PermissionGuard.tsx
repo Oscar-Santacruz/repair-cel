@@ -26,8 +26,11 @@ export async function PermissionGuard({
     const role = await getCurrentUserRole()
 
     const roleHierarchy: Record<UserRole, number> = {
+        owner: 3,
         admin: 3,
         user: 2,
+        technician: 2,
+        receptionist: 2,
         viewer: 1
     }
 

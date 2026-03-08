@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus, Search, Package } from "lucide-react"
 import { StockList } from "@/components/inventory/StockList"
-import { getStockItems, STOCK_TYPE_LABELS, StockType } from "./actions"
+import { getStockItems } from "./actions"
+import { STOCK_TYPE_LABELS, type StockType } from "@/lib/inventory"
 
 const TYPE_FILTERS = [
     { value: '', label: 'Todo' },
